@@ -4,7 +4,7 @@ import numpy as np
 import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
 
-from model.latent_gan import LatentGAN
+from model.latent_bigan import LatentBiGAN 
 
 @click.command()
 @click.option('-d', '--data',
@@ -36,7 +36,7 @@ def main(data, use_gpu, cuda_devices, log_device_placement):
     with g_gan.as_default():
         with tf.Session(config=config) as sess:
 
-            model = LatentGAN(session=sess)
+            model = LatentBiGAN(session=sess)
 
             model.train(data=X_train)
 
@@ -44,7 +44,7 @@ def main(data, use_gpu, cuda_devices, log_device_placement):
     with g_ano.as_default():
         with tf.Session(config=config) as sess:
 
-            model_embed = LatentGAN(session=sess)
+            model_embed = LatentBiGAN(session=sess)
             model_embed.build_gan_embedding()
 
             model_embed.load()

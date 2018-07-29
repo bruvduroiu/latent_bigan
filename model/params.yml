@@ -22,15 +22,13 @@ encoder:
 generator:
   fc1:
     units: 100
-    # activation: !!python/name:tensorflow.python.ops.gen_nn_ops.relu ''
-    activation: !!python/name:model.activations.lrelu ''
+    activation: !!python/name:tensorflow.python.ops.gen_nn_ops.relu ''
   fc2:
     units: 200
-    activation: !!python/name:model.activations.lrelu ''
+    activation: !!python/name:tensorflow.python.ops.gen_nn_ops.relu ''
   fc3:
     units: 200
-    # activation: !!python/name:tensorflow.python.ops.math_ops.sigmoid ''
-    activation: !!python/name:model.activations.lrelu ''
+    activation: !!python/name:tensorflow.python.ops.gen_nn_ops.relu ''
   out:
     units: 11
     activation: !!python/name:tensorflow.python.ops.math_ops.tanh '' 
@@ -64,12 +62,11 @@ discriminator:
 train:
   generator:
     learning_rate: 0.0002
-    beta1: 0.9
+    beta1: 0.5
   discriminator:
-    learning_rate: 0.0005
-    momentum: 0.9
-    use_nesterov: true
-  # discriminator:
-  #   learning_rate: 0.0002
-  #   beta1: 0.9
+    learning_rate: 0.0002
+    beta1: 0.5
+  encoder:
+    learning_rate: 0.0002
+    beta1: 0.5
 ...

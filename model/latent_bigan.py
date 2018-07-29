@@ -9,7 +9,7 @@ from tensorflow.contrib.tensorboard.plugins import projector
 from model.activations import lrelu
 from model.utils import sample_z
 
-class LatentGAN:
+class LatentBiGAN:
     def __init__(self, name='LatentGAN', session=None):
         self.name = name
         self.params = self._load_params()
@@ -22,6 +22,8 @@ class LatentGAN:
         self.X = tf.placeholder(tf.float32, shape=[None, self.data_dim])
 
         self.net_keep_prob = tf.placeholder_with_default(1.0, shape=[])
+
+        self.is_training_pl = tf.placeholder(tf.bool, shape=[], name='is_training_pl')
 
         self._build_gan()
         self._build_optimiser()
@@ -46,20 +48,25 @@ class LatentGAN:
 
     def _build_gan(self):
         with tf.variable_scope(self.name) as scope:
-            G = self._generator(self.z, reuse=False)
-            D_real_prob, D_real_logits = self._discriminator(self.X, reuse=False)
-            D_gen_prob, D_gen_logits = self._discriminator(G, reuse=True)
+            G = self._generator(self.z, self.is_training_pl, reuse=False)
+            E = self._encoder(self.X, self.is_training_pl, reuse=False)
+            D_real_prob, D_real_logits = self._discriminator(E, self.X, self.is_training_pl, reuse=False)
+            D_gen_prob, D_gen_logits = self._discriminator(self.z, G, self.is_training_pl, reuse=True)
 
-            G_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.zeros_like(D_gen_logits), logits=D_gen_logits)
-            D_real_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.zeros_like(D_real_logits), logits=D_real_logits)
-            D_gen_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(D_gen_logits), logits=D_gen_logits)
+            G_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(D_gen_logits), logits=D_gen_logits))
+            E_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.zeros_like(D_real_logits), logits=D_real_logits))
+
+            D_real_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(D_real_logits), logits=D_real_logits))
+            D_gen_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.zeros_like(D_gen_logits), logits=D_gen_logits))
             D_loss = D_real_loss + D_gen_loss
 
             self.G_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self.name + '/G/')
             self.D_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self.name + '/D/')
+            self.E_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self.name + '/E/')
 
             self.G_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope=self.name + '/G/')
             self.D_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope=self.name + '/D/')
+            self.E_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope=self.name + '/E/')
 
         self.summary_op = tf.summary.merge([
             tf.summary.scalar('G_loss', tf.reduce_mean(G_loss)),
@@ -69,8 +76,10 @@ class LatentGAN:
         ])
 
         self.fake_sample = G
+        self.encoding = E
         self.G_loss = G_loss
         self.D_loss = D_loss
+        self.E_loss = E_loss
 
     def _build_optimiser(self):
         with tf.variable_scope('gan_optimiser'):
@@ -78,121 +87,113 @@ class LatentGAN:
                 self.G_train_op = tf.train.AdamOptimizer(**self.params['train']['generator']).\
                     minimize(self.G_loss, var_list=self.G_vars)
             with tf.control_dependencies(self.D_update_ops):
-                # self.D_train_op = tf.train.AdamOptimizer(**self.params['train']['discriminator'])\
-                #     .minimize(self.D_loss, var_list=self.D_vars)
-                self.D_train_op = tf.train.MomentumOptimizer(**self.params['train']['discriminator']).\
-                    minimize(self.D_loss, var_list=self.D_vars)
+                self.D_train_op = tf.train.AdamOptimizer(**self.params['train']['discriminator'])\
+                    .minimize(self.D_loss, var_list=self.D_vars)
+            with tf.control_dependencies(self.E_update_ops):
+                self.E_train_op = tf.train.AdamOptimizer(**self.params['train']['encoder'])\
+                    .minimize(self.E_loss, var_list=self.E_vars)
 
-    def build_gan_embedding(self, lambda_ano=0.1):
-        with tf.variable_scope(self.name):
-            self.test_data = tf.placeholder(tf.float32, shape=[None, self.data_dim], name='ano_X')
-
-            with tf.variable_scope('AnoD'):
-                self.ano_z = tf.get_variable('ano_z', shape=[1, self.z_dim], dtype=tf.float32,
-                                             initializer=tf.random_normal_initializer(stddev=0.5,
-                                                                                      dtype=tf.float32))
-
-            self.ano_G = self._generator(self.ano_z, reuse=True)
-
-            self.res_loss = tf.reduce_sum(tf.abs(self.test_data - self.ano_G))
-
-            self.d_feature_test = self._discriminator_feature_extractor(self.test_data)
-            self.d_feature_z = self._discriminator_feature_extractor(self.ano_G)
-            self.dis_loss = tf.reduce_mean(tf.abs(self.d_feature_test - self.d_feature_z))
-
-            self.anomaly_score = (1. - lambda_ano) * self.res_loss + lambda_ano * self.dis_loss
-
-            ano_z_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self.name + '/AnoD/')
-
-            ano_z_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope=self.name + '/AnoD/')
-
-            with tf.control_dependencies(ano_z_update_ops):
-                self.ano_z_train_op = tf.train.AdamOptimizer(learning_rate=1e-2, beta1=0.9).\
-                    minimize(self.anomaly_score, var_list=ano_z_vars)
-
-    def _encoder(self, X, reuse=False):
+    def _encoder(self, X, is_training, reuse=False):
         with tf.variable_scope('E', reuse=reuse) as scope:
             if reuse:
                 scope.reuse_variables()
             net = X
             initializer = tf.random_normal_initializer(stddev=0.02)
-            net = tf.layers.dense(net, kernel_initializer=initializer,
-                                  **self.params['encoder']['fc1'])
-            net = tf.layers.dropout(net, self.net_keep_prob, training=True)
-            net = tf.layers.dense(net, kernel_initializer=initializer,
-                                  **self.params['encoder']['fc2'])
-            net = tf.layers.dropout(net, self.net_keep_prob, training=True)
-            net = tf.layers.dense(net, kernel_initializer=initializer,
-                                  **self.params['encoder']['fc3'])
-            net = tf.layers.dropout(net, self.net_keep_prob, training=True)
-            net = tf.layers.dense(net, kernel_initializer=initializer,
-                                  **self.params['encoder']['out'])
 
-            return net
+            with tf.variable_scope('fc1'):
+                net = tf.layers.dense(net, kernel_initializer=initializer,
+                                    **self.params['encoder']['fc1'])
 
-    def _generator(self, z, reuse=False):
+            with tf.variable_scope('fc2'):
+                net = tf.layers.dense(net, kernel_initializer=initializer,
+                                    **self.params['encoder']['fc2'])
+                net = tf.layers.batch_normalization(net, training=is_training)
+
+            with tf.variable_scope('fc3'):
+                net = tf.layers.dense(net, kernel_initializer=initializer,
+                                    **self.params['encoder']['fc3'])
+                net = tf.layers.batch_normalization(net, training=is_training)
+
+            with tf.variable_scope('fc_out'):
+                z = tf.layers.dense(net, kernel_initializer=initializer,
+                                    **self.params['encoder']['out'])
+
+            return z 
+
+    def _generator(self, z, is_training, reuse=False):
         with tf.variable_scope('G', reuse=reuse) as scope:
             if reuse:
-                tf.get_variable_scope().reuse_variables()
+                scope.reuse_variables()
             net = z
             initializer = tf.random_normal_initializer(stddev=0.02)
-            net = tf.layers.dense(net, kernel_initializer=initializer,
-                                  **self.params['generator']['fc1'])
-            net = tf.layers.dropout(net, self.net_keep_prob, training=True)
-            net = tf.layers.dense(net, kernel_initializer=initializer,
-                                  **self.params['generator']['fc2'])
-            net = tf.layers.dropout(net, self.net_keep_prob, training=True)
-            net = tf.layers.dense(net, kernel_initializer=initializer,
-                                  **self.params['generator']['fc3'])
-            net = tf.layers.dropout(net, self.net_keep_prob, training=True)
-            net = tf.layers.dense(net, kernel_initializer=initializer,
-                                  **self.params['generator']['out'])
+
+            with tf.variable_scope('fc1'):
+                net = tf.layers.dense(net, kernel_initializer=initializer,
+                                    **self.params['generator']['fc1'])
+                net = tf.layers.batch_normalization(net, training=is_training)
+
+            with tf.variable_scope('fc2'):
+                net = tf.layers.dense(net, kernel_initializer=initializer,
+                                    **self.params['generator']['fc2'])
+                net = tf.layers.batch_normalization(net, training=is_training)
+
+            with tf.variable_scope('fc3'):
+                net = tf.layers.dense(net, kernel_initializer=initializer,
+                                    **self.params['generator']['fc3'])
+                net = tf.layers.batch_normalization(net, training=is_training)
+
+            with tf.variable_scope('fc_out'):
+                net = tf.layers.dense(net, kernel_initializer=initializer,
+                                    **self.params['generator']['out'])
 
             return net
 
-    def _discriminator(self, z, X, reuse=False):
+    def _discriminator(self, z, X, is_training, reuse=False):
         with tf.variable_scope('D', reuse=reuse):
             if reuse:
                 tf.get_variable_scope().reuse_variables()
 
             x = X
-            x = tf.layers.dense(x, **self.params['discriminator']['fc1'])
-            x = tf.layers.dropout(x, self.net_keep_prob)
-            x = tf.layers.dense(x, **self.params['discriminator']['fc2'])
-            x = tf.layers.dropout(x, self.net_keep_prob)
-            x = tf.layers.dense(x, **self.params['discriminator']['fc3'])
-            x = tf.layers.dropout(x, self.net_keep_prob)
+            with tf.variable_scope('fc1'):
+                x = tf.layers.dense(x, **self.params['discriminator']['fc1'])
+                x = tf.layers.batch_normalization(x, training=is_training)
+                x = tf.layers.dropout(x, self.net_keep_prob, training=is_training)
+
+            with tf.variable_scope('fc2'):
+                x = tf.layers.dense(x, **self.params['discriminator']['fc2'])
+                x = tf.layers.batch_normalization(x, training=is_training)
+                x = tf.layers.dropout(x, self.net_keep_prob, training=is_training)
+
+            with tf.variable_scope('fc3'):
+                x = tf.layers.dense(x, **self.params['discriminator']['fc3'])
+                x = tf.layers.batch_normalization(x, training=is_training)
+                x = tf.layers.dropout(x, self.net_keep_prob, training=is_training)
 
             y = z
-            y = tf.layers.dense(y, **self.params['discriminator']['fc4']) 
-            y = tf.layers.dropout(y, self.net_keep_prob, training=True)
-            y = tf.layers.dense(y, **self.params['discriminator']['fc5']) 
-            y = tf.layers.dropout(y, self.net_keep_prob, training=True)
+            with tf.variable_scope('fc4'):
+                y = tf.layers.dense(y, **self.params['discriminator']['fc4']) 
+                y = tf.layers.batch_normalization(y, training=is_training)
+                y = tf.layers.dropout(y, self.net_keep_prob, training=is_training)
+
+            with tf.variable_scope('fc5'):
+                y = tf.layers.dense(y, **self.params['discriminator']['fc5']) 
+                y = tf.layers.batch_normalization(y, training=is_training)
+                y = tf.layers.dropout(y, self.net_keep_prob, training=is_training)
 
             x = tf.concat([x, y], axis=1)
-            x = tf.layers.dense(x, **self.params['discriminator']['joint1'])
-            x = tf.layers.dropout(x, self.net_keep_prob)
-            x = tf.layers.dense(x, **self.params['discriminator']['joint2'])
-            x = tf.layers.dropout(x, self.net_keep_prob)
+
+            with tf.variable_scope('joint1'):
+                x = tf.layers.dense(x, **self.params['discriminator']['joint1'])
+                x = tf.layers.dropout(x, self.net_keep_prob, training=is_training)
+
+            with tf.variable_scope('joint2'):
+                x = tf.layers.dense(x, **self.params['discriminator']['joint2'])
+                x = tf.layers.dropout(x, self.net_keep_prob, training=is_training)
             
             logits = tf.layers.dense(x, **self.params['discriminator']['logits'])
             prob = tf.sigmoid(logits)
 
             return prob, logits
-
-    def _discriminator_feature_extractor(self, X, reuse=True):
-        with tf.variable_scope('D', reuse=reuse):
-            if reuse:
-                tf.get_variable_scope().reuse_variables()
-
-            net = X
-            net = tf.layers.dense(net, **self.params['discriminator']['fc1'])
-            net = tf.layers.dropout(net, self.net_keep_prob)
-            net = tf.layers.dense(net, **self.params['discriminator']['fc2'])
-            net = tf.layers.dropout(net, self.net_keep_prob)
-            net = tf.layers.dense(net, **self.params['discriminator']['fc3'])
-
-            return net 
 
     def train(self, data, restore_checkpoint=False, checkpoint_path='./checkpoints'):
 
@@ -209,6 +210,7 @@ class LatentGAN:
 
         for epoch in range(self.n_epochs + 1):
             g_losses = []
+            e_losses = []
             for i in range(n_iterations_per_epoch):
                 half_batch = self.batch_size // 2
 
@@ -224,13 +226,13 @@ class LatentGAN:
                     self.D_train_op,
                     self.summary_op,
                     self.D_loss
-                ], feed_dict={self.X: X_D, self.z: z_D, self.net_keep_prob: 0.5})
+                ], feed_dict={self.X: X_D, self.z: z_D, self.is_training_pl: True, self.net_keep_prob: 0.2})
 
                 z_G = sample_z(num=self.batch_size, dim=self.z_dim)
                 _, g_loss = self.sess.run([
                     self.G_train_op,
                     self.G_loss
-                ], feed_dict={self.z: z_G, self.net_keep_prob: 0.5})
+                ], feed_dict={self.z: z_G, self.is_training_pl: True, self.net_keep_prob: 0.2})
 
                 g_losses.append(g_loss)
                 summary_writer.add_summary(summary, global_step=epoch)
