@@ -1,0 +1,75 @@
+---
+z_dim: 3
+data_dim: 11
+batch_size: 128
+epochs: 3000
+embed_epochs: 1000
+
+encoder:
+  fc1:
+    units: 200
+    activation: !!python/name:model.activations.lrelu ''
+  fc2:
+    units: 100
+    activation: !!python/name:model.activations.lrelu ''
+  fc3:
+    units: 50
+    activation: !!python/name:model.activations.lrelu ''
+  out:
+    units: 3
+    activation: null
+
+generator:
+  fc1:
+    units: 100
+    # activation: !!python/name:tensorflow.python.ops.gen_nn_ops.relu ''
+    activation: !!python/name:model.activations.lrelu ''
+  fc2:
+    units: 200
+    activation: !!python/name:model.activations.lrelu ''
+  fc3:
+    units: 200
+    # activation: !!python/name:tensorflow.python.ops.math_ops.sigmoid ''
+    activation: !!python/name:model.activations.lrelu ''
+  out:
+    units: 11
+    activation: !!python/name:tensorflow.python.ops.math_ops.tanh '' 
+
+discriminator:
+  fc1:
+    units: 200
+    activation: !!python/name:model.activations.lrelu ''
+  fc2:
+    units: 100
+    activation: !!python/name:model.activations.lrelu ''
+  fc3:
+    units: 50
+    activation: !!python/name:model.activations.lrelu ''
+  fc4:
+    units: 64
+    activation: !!python/name:model.activations.lrelu ''
+  fc5:
+    units: 64
+    activation: !!python/name:model.activations.lrelu ''
+  joint1:
+    units: 128
+    activation: !!python/name:model.activations.lrelu ''
+  joint2:
+    units: 128
+    activation: !!python/name:model.activations.lrelu ''
+  logits:
+    units: 1
+    activation: null
+
+train:
+  generator:
+    learning_rate: 0.0002
+    beta1: 0.9
+  discriminator:
+    learning_rate: 0.0005
+    momentum: 0.9
+    use_nesterov: true
+  # discriminator:
+  #   learning_rate: 0.0002
+  #   beta1: 0.9
+...
